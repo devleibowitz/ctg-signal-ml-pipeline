@@ -1,0 +1,16 @@
+# Local data (raw monitor files, intermediates, etc.)
+data/
+
+output/
+
+# Internal agent instructions — not for version control
+CLAUDE.md
+
+
+# Byte-compiled / optimized files
+
+__pycache__/
+
+*.py[cod]
+
+*$py.class

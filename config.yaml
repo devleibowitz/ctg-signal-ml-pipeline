@@ -1,0 +1,17 @@
+input_dir: "/Users/devleibowitz/Documents/Shomron Lab/lis_fetal_risk/data/raw/Encrypted Monitor files"
+output_dir: "/Users/devleibowitz/Documents/Learning/ctg_signal_processing/output"
+
+# Sequence formatting
+min_duration_minutes: 90
+resample_freq_seconds: 1   # target uniform sampling interval in seconds
+
+# Patient file merging
+merge_gap_hours: 2.0
+
+# Physiological validity bounds
+hr1_min: 50.0    # bpm — below this is artifact
+hr1_max: 240.0   # bpm — above this is artifact
+toco_min: 0.0
+toco_max: 100.0
+
+log_level: "INFO"
