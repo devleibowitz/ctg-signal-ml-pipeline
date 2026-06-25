@@ -13,9 +13,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PipelineConfig:
-    input_dir: Path
     output_dir: Path
+    input_source: str = "parquet"
+    input_dir_csv: Path | None = None
+    input_dir_parquet: Path | None = None
     parquet_folders_to_load: int = 18
+    parquet_files_to_load: int | None = None
     min_duration_minutes: int = 90
     resample_freq_seconds: int = 1
     merge_gap_hours: float = 2.0
@@ -26,12 +29,30 @@ class PipelineConfig:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
-        self.input_dir = Path(self.input_dir)
         self.output_dir = Path(self.output_dir)
+        if self.input_dir_csv is not None:
+            self.input_dir_csv = Path(self.input_dir_csv)
+        if self.input_dir_parquet is not None:
+            self.input_dir_parquet = Path(self.input_dir_parquet)
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        if not self.input_dir.exists():
-            logger.warning("Input directory does not exist: %s", self.input_dir)
+        source = self.input_source.lower()
+        if source not in {"csv", "parquet"}:
+            raise ValueError(f"input_source must be 'csv' or 'parquet', got {self.input_source!r}")
+
+        active = self.input_dir
+        if active is None:
+            logger.warning("No input directory configured for input_source=%s", self.input_source)
+        elif not active.exists():
+            logger.warning("Input directory does not exist: %s", active)
+
+    @property
+    def input_dir(self) -> Path | None:
+        """Active input directory based on ``input_source``."""
+        if self.input_source.lower() == "csv":
+            return self.input_dir_csv
+        return self.input_dir_parquet
 
     @property
     def min_duration_steps(self) -> int:
@@ -59,26 +80,14 @@ def load_config(config_path: str | Path = "config.yaml") -> PipelineConfig:
     with open(config_path) as fh:
         raw: dict = yaml.safe_load(fh)
 
-    # Backward-compat alias: parquet_files_to_load -> parquet_folders_to_load
-    legacy_key = "parquet_files_to_load"
-    canonical_key = "parquet_folders_to_load"
-    if legacy_key in raw and canonical_key not in raw:
-        raw[canonical_key] = raw.pop(legacy_key)
-        logger.warning(
-            "Config key '%s' is deprecated; using '%s' instead.",
-            legacy_key,
-            canonical_key,
-        )
-    elif legacy_key in raw and canonical_key in raw:
-        logger.warning(
-            "Both '%s' and '%s' provided; ignoring '%s'.",
-            canonical_key,
-            legacy_key,
-            legacy_key,
-        )
-        raw.pop(legacy_key, None)
+    # Backward-compat: legacy single input_dir key
+    if "input_dir" in raw:
+        legacy_dir = raw.pop("input_dir")
+        if "input_dir_parquet" not in raw and "input_dir_csv" not in raw:
+            raw["input_dir_parquet"] = legacy_dir
+            logger.warning("Config key 'input_dir' is deprecated; mapped to 'input_dir_parquet'.")
 
     cfg = PipelineConfig(**raw)
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
-    logger.info("Config loaded from %s", config_path)
+    logger.info("Config loaded from %s (input_source=%s)", config_path, cfg.input_source)
     return cfg

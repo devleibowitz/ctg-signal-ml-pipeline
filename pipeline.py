@@ -166,11 +166,17 @@ def run_pipeline(
     plots_dir = config.output_dir / "plots"
 
     # 1. Load
-    raw_patients, n_files_merged = load_all_patients(config)
+    raw_patients, n_files_merged, _load_summary = load_all_patients(config)
     if not raw_patients:
-        raise RuntimeError("No patient data loaded — check input_dir in config.yaml")
+        raise RuntimeError("No patient data loaded — check input_source and input paths in config.yaml")
 
-    n_files_total = sum(1 for _ in config.input_dir.glob("*.csv")) if config.input_dir.exists() else 0
+    input_dir = config.input_dir
+    if config.input_source.lower() == "csv" and input_dir is not None:
+        n_files_total = sum(1 for _ in input_dir.glob("*.csv"))
+    elif config.input_source.lower() == "parquet" and input_dir is not None:
+        n_files_total = sum(1 for _ in input_dir.rglob("*.parquet"))
+    else:
+        n_files_total = 0
 
     # 2. Preprocess
     processed, all_stats = preprocess_all(raw_patients, config)
