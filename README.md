@@ -9,7 +9,7 @@ The goal is to transform heterogeneous CSV monitor exports into two model-ready 
 1. **3D tensors** — `(num_samples × time_steps × 2_features)` with FHR (`HR1`) and TOCO channels at a fixed sequence length.
 2. **Feature table** — one row per patient sequence with validity metrics and engineered clinical descriptors.
 
-The pipeline is modular: `loader.py` → `preprocess.py` → `pipeline.py` (tensor formatting) → `features.py`, configured via `config.yaml`.
+The pipeline is modular: `loader.py` → `preprocess.py` → `pipeline.py` (tensor formatting) → `features.py` → `label_tabular_ctg_features.py`, configured via `config.yaml`.
 
 ## Tech Stack
 
@@ -38,6 +38,7 @@ Outputs are written to `output_dir` (default: `output/`):
 |------|-------------|
 | `tensor.pt` | PyTorch tensor + patient ID list |
 | `extracted_clinical_features.csv` | Per-sequence clinical features |
+| `labeled_clinical_features.csv` | Quality-filtered features with binary CTG labels |
 | `summary.csv` | Pipeline-level statistics |
 | `per_patient_stats.csv` | Per-patient preprocessing metrics |
 | `plots/` | Before/after signal plots and duration distributions |
@@ -60,8 +61,12 @@ Raw CSV files
 ┌─────────────────┐    ┌─────────────────┐
 │ Tensor Format   │    │ Feature Extract │  Validity masking → clinical metrics
 └────────┬────────┘    └────────┬────────┘
+         │                      ▼
+         │             ┌─────────────────┐
+         │             │ Clinical Label  │  CTG inclusion / exclusion rules
+         │             └────────┬────────┘
          ▼                      ▼
-    tensor.pt          extracted_clinical_features.csv
+    tensor.pt          labeled_clinical_features.csv
 ```
 
 ---
@@ -175,6 +180,61 @@ Each row in `extracted_clinical_features.csv` represents one processed patient s
 
 ---
 
+## Clinical Labeling (Non-Reassuring FHR)
+
+After feature extraction, `label_tabular_ctg_features.py` applies standard CTG clinical guidelines to assign a strict binary target for supervised learning. This step runs automatically as part of `pipeline.py` and can also be run standalone:
+
+```bash
+python label_tabular_ctg_features.py
+```
+
+### Label semantics
+
+| `criteria_non_reassuring` | Meaning |
+|---------------------------|---------|
+| `1` | **Non-reassuring (pathological)** — at least one pathological rule fired |
+| `0` | **Reassuring (normal)** — all reassuring criteria met |
+
+Rows that fail quality checks or fall into the clinical **indeterminate** zone are **excluded** from the labeled dataset.
+
+### Exclusion criteria
+
+Records are dropped if they meet **any** of the following:
+
+| Step | Criterion | Threshold |
+|------|-----------|-----------|
+| **7A — Low FHR validity** | `valid_fhr_ratio` | < 60% |
+| **7A — Low TOCO validity** | `valid_toco_ratio` | < 60% |
+| **7D — Indeterminate** | Neither pathological nor reassuring rules apply | — |
+
+### Non-reassuring inclusion (`criteria_non_reassuring = 1`)
+
+A record is labeled **non-reassuring** if **any** of the following pathological rules fire (rules are evaluated with OR logic; multiple rules may overlap on the same record):
+
+| Rule | Criteria |
+|------|----------|
+| **Hypoxia signature** | Baseline variability < 5 bpm **and** late deceleration present |
+| **Severe bradycardia** | Baseline FHR < 110 bpm **and** baseline variability < 5 bpm |
+| **Severe tachycardia** | Baseline FHR > 160 bpm **and** baseline variability < 5 bpm |
+| **Sustained distress** | Prolonged deceleration count > 0 |
+
+Pathological labels take precedence over reassuring criteria when both could apply.
+
+### Reassuring inclusion (`criteria_non_reassuring = 0`)
+
+A record is labeled **reassuring** only if **all** of the following are true:
+
+- Baseline FHR between 110 and 160 bpm (inclusive)
+- Baseline variability between 5 and 25 bpm (inclusive)
+- No late decelerations
+- No prolonged decelerations
+
+### Output
+
+`labeled_clinical_features.csv` contains all columns from `extracted_clinical_features.csv` plus `criteria_non_reassuring`, restricted to records that passed quality filtering and received a definitive label.
+
+---
+
 ## Configuration
 
 Key parameters in `config.yaml`:
@@ -195,6 +255,7 @@ toco_min / toco_max           # TOCO physiological bounds
 ├── loader.py          # CSV loading and patient merging
 ├── preprocess.py      # Signal cleaning and resampling
 ├── features.py        # Validity masking and clinical features
+├── label_tabular_ctg_features.py  # CTG clinical labeling (Step 7)
 ├── pipeline.py        # End-to-end orchestration
 ├── visualize.py       # Before/after plots and reporting
 └── explore_patient.ipynb  # Interactive exploration notebook
