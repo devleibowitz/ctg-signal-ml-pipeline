@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -59,6 +60,181 @@ def format_tensor(
     tensor = torch.tensor(np.stack(samples), dtype=torch.float32)  # (N, T, 2)
     logger.info("Output tensor shape: %s  (samples × timesteps × features)", tuple(tensor.shape))
     return tensor, patient_ids
+
+
+# ---------------------------------------------------------------------------
+# Tensor index mapping & lookup
+# ---------------------------------------------------------------------------
+
+TENSOR_INDEX_MAP_FILENAME = "tensor_index_map.csv"
+TENSOR_ARTIFACT_FILENAME = "tensor.pt"
+
+
+def build_tensor_index_map(
+    patient_ids: list[str],
+    processed: dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """Build a per-row lookup table aligned with tensor sample indices.
+
+    Row ``i`` corresponds to ``tensor[i]`` and ``patient_ids[i]``.  Metadata is
+    taken from the processed DataFrames (same source as feature extraction).
+
+    Args:
+        patient_ids: Ordered patient/session IDs from :func:`format_tensor`.
+        processed: Mapping of patient_id → processed DataFrame.
+
+    Returns:
+        DataFrame with columns ``tensor_index``, ``patient_id``, ``file_name``,
+        and ``birth_time``.
+
+    Raises:
+        KeyError: If a ``patient_ids`` entry is missing from ``processed``.
+    """
+    rows: list[dict[str, Any]] = []
+
+    for i, pid in enumerate(patient_ids):
+        if pid not in processed:
+            raise KeyError(f"patient_id {pid!r} missing from processed data")
+        df = processed[pid]
+        source_files = list(df.attrs.get("source_files", []))
+        file_name = ";".join(source_files) if source_files else pid
+        rows.append({
+            "tensor_index": i,
+            "patient_id":     pid,
+            "file_name":      file_name,
+            "birth_time":     df["Monitor_Date"].max(),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def tensor_index_to_meta(
+    index: int,
+    patient_ids: list[str],
+    index_map: pd.DataFrame,
+) -> dict[str, Any]:
+    """Return metadata for a single tensor row.
+
+    Args:
+        index: Tensor sample index (0-based).
+        patient_ids: Ordered ID list from :func:`format_tensor`.
+        index_map: Lookup table from :func:`build_tensor_index_map`.
+
+    Returns:
+        Dict with ``tensor_index``, ``patient_id``, ``file_name``, and
+        ``birth_time``.
+
+    Raises:
+        IndexError: If ``index`` is out of range.
+    """
+    if index < 0 or index >= len(patient_ids):
+        raise IndexError(
+            f"tensor index {index} out of range for {len(patient_ids)} samples"
+        )
+    row = index_map.iloc[index]
+    if int(row["tensor_index"]) != index:
+        row = index_map.loc[index_map["tensor_index"] == index].iloc[0]
+    return row.to_dict()
+
+
+def patient_id_to_index(patient_id: str, patient_ids: list[str]) -> int:
+    """Return the first tensor index for an exact ``patient_id`` match.
+
+    Args:
+        patient_id: Patient/session identifier.
+        patient_ids: Ordered ID list from :func:`format_tensor`.
+
+    Returns:
+        Matching tensor index.
+
+    Raises:
+        KeyError: If ``patient_id`` is not present.
+    """
+    try:
+        return patient_ids.index(patient_id)
+    except ValueError as exc:
+        raise KeyError(f"No tensor index for patient_id={patient_id!r}") from exc
+
+
+def patient_id_to_indices(patient_id: str, patient_ids: list[str]) -> list[int]:
+    """Return all tensor indices matching ``patient_id`` exactly.
+
+    For a base patient ID shared across split sessions (``pid_0``, ``pid_1``),
+    call this once per session ID or filter :func:`build_tensor_index_map` by
+    ``patient_id`` prefix.
+
+    Args:
+        patient_id: Patient/session identifier.
+        patient_ids: Ordered ID list from :func:`format_tensor`.
+
+    Returns:
+        List of matching indices (empty when no match).
+    """
+    return [i for i, pid in enumerate(patient_ids) if pid == patient_id]
+
+
+def save_tensor_artifacts(
+    tensor: torch.Tensor,
+    patient_ids: list[str],
+    index_map: pd.DataFrame,
+    output_dir: str | Path,
+) -> tuple[Path, Path]:
+    """Persist the tensor bundle and a CSV index map for offline lookup.
+
+    Args:
+        tensor: Output tensor of shape ``(N, T, 2)``.
+        patient_ids: Ordered ID list aligned with tensor rows.
+        index_map: Lookup table from :func:`build_tensor_index_map`.
+        output_dir: Directory for ``tensor.pt`` and ``tensor_index_map.csv``.
+
+    Returns:
+        ``(tensor_path, index_map_path)``
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tensor_path = output_dir / TENSOR_ARTIFACT_FILENAME
+    map_path = output_dir / TENSOR_INDEX_MAP_FILENAME
+
+    birth_times = pd.to_datetime(index_map["birth_time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    torch.save(
+        {
+            "tensor":      tensor,
+            "patient_ids": patient_ids,
+            "file_names":  index_map["file_name"].tolist(),
+            "birth_times": birth_times.tolist(),
+        },
+        tensor_path,
+    )
+    index_map.to_csv(map_path, index=False)
+
+    logger.info("Tensor saved → %s", tensor_path)
+    logger.info("Tensor index map saved → %s", map_path)
+    return tensor_path, map_path
+
+
+def load_tensor_artifacts(output_dir: str | Path) -> dict[str, Any]:
+    """Load the tensor bundle and index map written by :func:`save_tensor_artifacts`.
+
+    Args:
+        output_dir: Directory containing ``tensor.pt`` and ``tensor_index_map.csv``.
+
+    Returns:
+        Dict with keys ``tensor``, ``patient_ids``, ``file_names``, ``birth_times``,
+        and ``index_map``.
+    """
+    output_dir = Path(output_dir)
+    data = torch.load(output_dir / TENSOR_ARTIFACT_FILENAME, weights_only=False)
+    index_map = pd.read_csv(output_dir / TENSOR_INDEX_MAP_FILENAME)
+    index_map["birth_time"] = pd.to_datetime(index_map["birth_time"])
+    return {
+        "tensor":      data["tensor"],
+        "patient_ids": data["patient_ids"],
+        "file_names":  data.get("file_names"),
+        "birth_times": data.get("birth_times"),
+        "index_map":   index_map,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +334,8 @@ def run_pipeline(
         visualize_ids: Patient IDs to generate before/after signal plots for.
             Pass ``"all"`` as the first element to plot every patient.
         plot_durations: If True, save a duration-distribution histogram.
-        save_tensor: If True, save tensor.pt to config.output_dir.
+        save_tensor: If True, save ``tensor.pt`` and ``tensor_index_map.csv`` to
+            config.output_dir.
         label_features: If True, run the clinical labeling engine on extracted features.
 
     Returns:
@@ -224,10 +401,10 @@ def run_pipeline(
     if plot_durations:
         plot_duration_distribution(per_patient_df, output_dir=plots_dir)
 
+    index_map = build_tensor_index_map(patient_ids, processed)
+
     if save_tensor:
-        tensor_path = config.output_dir / "tensor.pt"
-        torch.save({"tensor": tensor, "patient_ids": patient_ids}, tensor_path)
-        logger.info("Tensor saved → %s", tensor_path)
+        save_tensor_artifacts(tensor, patient_ids, index_map, config.output_dir)
 
     summary_df.to_csv(config.output_dir / "summary.csv", index=False)
     per_patient_df.to_csv(config.output_dir / "per_patient_stats.csv", index=False)
