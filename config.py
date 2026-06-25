@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class PipelineConfig:
     input_dir: Path
     output_dir: Path
+    parquet_folders_to_load: int = 18
     min_duration_minutes: int = 90
     resample_freq_seconds: int = 1
     merge_gap_hours: float = 2.0
@@ -57,6 +58,25 @@ def load_config(config_path: str | Path = "config.yaml") -> PipelineConfig:
 
     with open(config_path) as fh:
         raw: dict = yaml.safe_load(fh)
+
+    # Backward-compat alias: parquet_files_to_load -> parquet_folders_to_load
+    legacy_key = "parquet_files_to_load"
+    canonical_key = "parquet_folders_to_load"
+    if legacy_key in raw and canonical_key not in raw:
+        raw[canonical_key] = raw.pop(legacy_key)
+        logger.warning(
+            "Config key '%s' is deprecated; using '%s' instead.",
+            legacy_key,
+            canonical_key,
+        )
+    elif legacy_key in raw and canonical_key in raw:
+        logger.warning(
+            "Both '%s' and '%s' provided; ignoring '%s'.",
+            canonical_key,
+            legacy_key,
+            legacy_key,
+        )
+        raw.pop(legacy_key, None)
 
     cfg = PipelineConfig(**raw)
     logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))

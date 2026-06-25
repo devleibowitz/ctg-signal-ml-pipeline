@@ -1,5 +1,7 @@
-input_dir: "/Users/devleibowitz/Documents/Shomron Lab/lis_fetal_risk/data/raw/Encrypted Monitor files"
+input_dir: "/Users/devleibowitz/Documents/Shomron Lab/lis_fetal_risk/data/raw/Encrypted Monitor Files Parquet"
 output_dir: "/Users/devleibowitz/Documents/Learning/ctg_signal_processing/output"
+parquet_folders_to_load: 1
+parquet_files_to_load: 20
 
 # Sequence formatting
 min_duration_minutes: 90
