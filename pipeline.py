@@ -11,6 +11,7 @@ import torch
 
 from config import PipelineConfig, load_config
 from features import extract_all_features
+from label_tabular_ctg_features import run_labeling
 from loader import load_all_patients
 from preprocess import PreprocessStats, preprocess_all
 from visualize import plot_duration_distribution, plot_patient_signals
@@ -139,15 +140,18 @@ def run_pipeline(
     visualize_ids: list[str] | None = None,
     plot_durations: bool = True,
     save_tensor: bool = True,
-) -> tuple[torch.Tensor, list[str], pd.DataFrame, pd.DataFrame]:
+    label_features: bool = True,
+) -> tuple[torch.Tensor, list[str], pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
     """Execute the complete CTG signal processing pipeline.
 
     Steps:
         1. Load and merge patient CSV files (loader)
         2. Preprocess each patient signal (preprocess)
         3. Format into a 3D tensor (format_tensor)
-        4. Generate visualizations (visualize)
-        5. Produce and save summary statistics (build_summary)
+        4. Extract clinical features (features)
+        5. Apply clinical labeling rules (label_tabular_ctg_features)
+        6. Generate visualizations (visualize)
+        7. Produce and save summary statistics (build_summary)
 
     Args:
         config_path: Path to the YAML configuration file.
@@ -155,9 +159,11 @@ def run_pipeline(
             Pass ``"all"`` as the first element to plot every patient.
         plot_durations: If True, save a duration-distribution histogram.
         save_tensor: If True, save tensor.pt to config.output_dir.
+        label_features: If True, run the clinical labeling engine on extracted features.
 
     Returns:
-        (tensor, patient_ids, summary_df, per_patient_df)
+        (tensor, patient_ids, summary_df, per_patient_df, labeled_df)
+        labeled_df is None when label_features is False.
 
     Raises:
         RuntimeError: If no data survives loading or preprocessing.
@@ -193,7 +199,13 @@ def run_pipeline(
     logger.info("Clinical features saved → %s  (%d rows × %d cols)",
                 features_path, len(features_df), len(features_df.columns))
 
-    # 5. Visualize
+    # 5. Clinical labeling
+    labeled_df: pd.DataFrame | None = None
+    if label_features:
+        labeled_path = config.output_dir / "labeled_clinical_features.csv"
+        labeled_df = run_labeling(features_path, labeled_path)
+
+    # 6. Visualize
     ids_to_plot: list[str] = []
     if visualize_ids:
         ids_to_plot = list(processed.keys()) if visualize_ids[0] == "all" else visualize_ids
@@ -204,7 +216,7 @@ def run_pipeline(
             continue
         plot_patient_signals(pid, raw_patients[pid], processed[pid], output_dir=plots_dir)
 
-    # 6. Summary
+    # 7. Summary
     summary_df, per_patient_df = build_summary(
         all_stats, processed, config, n_files_total, n_files_merged,
     )
@@ -221,8 +233,9 @@ def run_pipeline(
     per_patient_df.to_csv(config.output_dir / "per_patient_stats.csv", index=False)
 
     logger.info("\n=== Pipeline Summary ===\n%s", summary_df.T.to_string())
+    print(f"\n=== Pipeline Summary ===\n{summary_df.T.to_string()}")
 
-    return tensor, patient_ids, summary_df, per_patient_df
+    return tensor, patient_ids, summary_df, per_patient_df, labeled_df
 
 
 if __name__ == "__main__":
